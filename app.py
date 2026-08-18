@@ -182,7 +182,7 @@ def fetch_uk_list():
     try:
         resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, stream=True)
         resp.raise_for_status()
-        df = pd.read_csv(io.StringIO(resp.text), on_bad_lines="skip", engine="python", low_memory=False)
+        df = pd.read_csv(io.StringIO(resp.text), on_bad_lines="skip", engine="python")
         name_cols = [c for c in df.columns if "name" in c.lower()]
         country_cols = [c for c in df.columns if "country" in c.lower() or "nationality" in c.lower()]
         type_cols = [c for c in df.columns if c.lower() in ("group type", "grouptype", "individual/entity")]
