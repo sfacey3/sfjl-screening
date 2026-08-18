@@ -4,13 +4,15 @@ SFJL PEP / Sanctions Screening
 Screens a name against real, publicly published sanctions lists (OFAC, UN,
 EU, UK) and flags jurisdiction risk against the current FATF grey/black
 lists. Also does a best-effort PEP check against Wikidata's record of
-current heads of state/government.
+current heads of state/government and cabinet ministers.
 
 IMPORTANT LIMITATIONS (see the banner in the app itself):
-- There is no free, comprehensive, global PEP database. The Wikidata layer
-  here only covers heads of state/government - not ministers, legislators,
-  judges, state-owned-enterprise executives, or PEP family members/close
-  associates.
+- There is no free, comprehensive, global PEP database. The heads of
+  state/government layer is reliable (Wikidata keeps it as a direct
+  property on each country's record). The cabinet-minister layer is real
+  but uneven, since it depends on volunteer-maintained per-country pages.
+  Neither layer covers legislators, judges, state-owned-enterprise
+  executives, or PEP family members/close associates.
 - Sanctions lists are fetched live from official sources and cached for a
   few hours. If a source fails to load, the app says so explicitly rather
   than silently screening against a partial list.
@@ -343,6 +345,65 @@ def fetch_pep_wikidata():
         return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
 
 
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def fetch_pep_wikidata_ministers():
+    """Best-effort PEP layer, second tier: cabinet ministers and similar
+    government-minister-level officeholders, sourced live from Wikidata.
+
+    Unlike heads of state/government (which Wikidata maintains as a direct
+    property on each country's own item), minister-level data lives on each
+    minister's individual page via "position held" (P39), pointing to a
+    country-specific position item (e.g. "Minister of Culture, Gender,
+    Entertainment and Sport (Jamaica)") that is itself tagged as a subclass
+    of "minister". Coverage here is real but uneven - it depends on
+    volunteer editors keeping each country's ministerial pages current, so
+    it will catch many ministers and miss others. Treat a "no match" here
+    with much less confidence than a "no match" against the sanctions lists
+    or the heads-of-state/government layer above.
+    """
+    endpoint = "https://query.wikidata.org/sparql"
+    query = """
+    SELECT DISTINCT ?personLabel ?positionLabel ?countryLabel WHERE {
+      ?person p:P39 ?stmt .
+      ?stmt ps:P39 ?position .
+      ?position wdt:P279* wd:Q83307 .
+      FILTER NOT EXISTS { ?stmt pq:P582 ?end }
+      OPTIONAL { ?position wdt:P1001 ?country }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 20000
+    """
+    try:
+        resp = requests.get(
+            endpoint,
+            params={"query": query, "format": "json"},
+            headers={**HEADERS, "Accept": "application/sparql-results+json"},
+            timeout=55,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        records = []
+        seen = set()
+        for b in data["results"]["bindings"]:
+            name = b.get("personLabel", {}).get("value", "").strip()
+            position = b.get("positionLabel", {}).get("value", "").strip()
+            country = b.get("countryLabel", {}).get("value", "").strip()
+            if not name:
+                continue
+            key = (name, position, country)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(_record(name, "Wikidata (open data)", "PEP", position, country))
+
+        if not records:
+            raise ValueError("Wikidata minister query returned no results")
+
+        return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
+    except Exception as e:
+        return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
+
+
 def _now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -354,6 +415,7 @@ SOURCES = {
     "UK Sanctions List": fetch_uk_list,
     "EU Consolidated List": fetch_eu_list,
     "PEP (Wikidata, heads of state/government)": fetch_pep_wikidata,
+    "PEP (Wikidata, cabinet ministers)": fetch_pep_wikidata_ministers,
 }
 
 
@@ -430,13 +492,15 @@ def main():
     st.warning(
         "**Read before relying on this tool:** Sanctions layers (OFAC, UN, EU, UK) are "
         "fetched live from official government sources and are as current as those sources. "
-        "The PEP layer is sourced from Wikidata and covers **only current heads of state and "
-        "heads of government** — it does **not** cover ministers, legislators, judiciary, "
-        "state-owned-enterprise executives, or PEP family members/close associates, and Wikidata "
-        "itself can be incomplete, outdated, or wrong. This tool does not replace a licensed "
-        "sanctions/PEP vendor (World-Check, ComplyAdvantage, Dow Jones, LexisNexis) for BOJ "
-        "examination or regulatory reliance purposes. Always independently verify any hit — "
-        "and any \"no match\" result on a genuinely high-risk customer.",
+        "The PEP layers are sourced from Wikidata. **Heads of state/government** coverage is "
+        "reliable (Wikidata maintains it directly on each country's record). **Cabinet ministers** "
+        "coverage is real but uneven — it depends on volunteer editors keeping each country's "
+        "ministerial pages current, so it will catch many ministers and miss others. Neither layer "
+        "covers legislators, judiciary, state-owned-enterprise executives, or PEP family "
+        "members/close associates. This tool does not replace a licensed sanctions/PEP vendor "
+        "(World-Check, ComplyAdvantage, Dow Jones, LexisNexis) for BOJ examination or regulatory "
+        "reliance purposes. Always independently verify any hit — and any \"no match\" result, "
+        "especially on a minister-level or lower PEP, on a genuinely high-risk customer.",
         icon="⚠️",
     )
 
