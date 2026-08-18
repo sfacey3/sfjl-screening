@@ -371,7 +371,7 @@ def fetch_pep_wikidata_ministers():
       OPTIONAL { ?position wdt:P1001 ?country }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
     }
-    LIMIT 20000
+    LIMIT 100000
     """
     try:
         resp = requests.get(
@@ -399,7 +399,10 @@ def fetch_pep_wikidata_ministers():
         if not records:
             raise ValueError("Wikidata minister query returned no results")
 
-        return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
+        status = {"ok": True, "rows": len(records), "fetched": _now()}
+        if len(data["results"]["bindings"]) >= 100000:
+            status["note"] = "Hit the query row limit - results may be truncated (missing some countries)"
+        return pd.DataFrame(records), status
     except Exception as e:
         return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
 
@@ -527,6 +530,8 @@ def main():
         for label, status in statuses.items():
             if status.get("ok"):
                 st.success(f"{label}: {status['rows']:,} records\n\n_as of {status['fetched']}_")
+                if status.get("note"):
+                    st.caption(f"⚠️ {status['note']}")
             else:
                 st.error(f"{label}: FAILED TO LOAD\n\n`{status.get('error', 'unknown error')}`")
 
