@@ -189,7 +189,19 @@ def fetch_uk_list():
     try:
         resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         resp.raise_for_status()
-        df = pd.read_csv(io.StringIO(resp.text), on_bad_lines="skip", engine="python")
+
+        # The published file has a metadata preamble line (e.g. "Report Date: ...")
+        # before the real header row. Find the real header by looking for a
+        # known official column name and skip everything above it.
+        lines = resp.text.splitlines()
+        header_idx = 0
+        for i, line in enumerate(lines[:10]):
+            if "Unique ID" in line or "Name 1" in line:
+                header_idx = i
+                break
+        csv_text = "\n".join(lines[header_idx:])
+
+        df = pd.read_csv(io.StringIO(csv_text), on_bad_lines="skip", engine="python")
 
         if len(df.columns) < 5:
             raise ValueError(
