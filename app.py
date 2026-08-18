@@ -104,6 +104,8 @@ def fetch_ofac_sdn():
             for r in df.itertuples()
             if pd.notna(r.sdn_name)
         ]
+        if not records:
+            raise ValueError(f"Parsed {len(df)} row(s) but extracted 0 names")
         return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
     except Exception as e:
         return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
@@ -126,6 +128,8 @@ def fetch_ofac_consolidated():
             for r in df.itertuples()
             if pd.notna(r.sdn_name)
         ]
+        if not records:
+            raise ValueError(f"Parsed {len(df)} row(s) but extracted 0 names")
         return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
     except Exception as e:
         return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
@@ -171,6 +175,9 @@ def fetch_un_consolidated():
                 records.append(_record(name, "UN Security Council", "Sanctions",
                                         "Entity", "", aliases, remarks=ref))
 
+        if not records:
+            raise ValueError("Parsed XML but extracted 0 individuals/entities")
+
         return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
     except Exception as e:
         return pd.DataFrame(), {"ok": False, "error": str(e), "fetched": _now()}
@@ -180,17 +187,37 @@ def fetch_un_consolidated():
 def fetch_uk_list():
     url = "https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT, stream=True)
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         resp.raise_for_status()
         df = pd.read_csv(io.StringIO(resp.text), on_bad_lines="skip", engine="python")
-        name_cols = [c for c in df.columns if "name" in c.lower()]
+
+        if len(df.columns) < 5:
+            raise ValueError(
+                f"Unexpected CSV shape ({len(df.columns)} column(s): {list(df.columns)[:10]}) - "
+                "source may have blocked the request or changed format"
+            )
+
+        # Official UK Sanctions List field names are "Name 1".."Name 6".
+        name_component_cols = [c for c in df.columns if c.strip().lower() in
+                                {"name 1", "name 2", "name 3", "name 4", "name 5", "name 6"}]
+        if not name_component_cols:
+            name_component_cols = [
+                c for c in df.columns
+                if "name" in c.lower() and "type" not in c.lower() and "script" not in c.lower()
+            ]
+        if not name_component_cols:
+            raise ValueError(f"No name columns found among: {list(df.columns)}")
+
         country_cols = [c for c in df.columns if "country" in c.lower() or "nationality" in c.lower()]
-        type_cols = [c for c in df.columns if c.lower() in ("group type", "grouptype", "individual/entity")]
+        type_cols = [c for c in df.columns if "individual" in c.lower() and "entity" in c.lower()]
 
         records = []
         for _, row in df.iterrows():
-            parts = [str(row[c]) for c in name_cols if pd.notna(row.get(c))]
-            name = " ".join(p for p in parts if p and p.lower() != "nan").strip()
+            parts = [
+                str(row[c]).strip() for c in name_component_cols
+                if pd.notna(row.get(c)) and str(row[c]).strip().lower() != "nan"
+            ]
+            name = " ".join(parts).strip()
             if not name:
                 continue
             country = ""
@@ -204,6 +231,11 @@ def fetch_uk_list():
                     list_type = str(row[c])
                     break
             records.append(_record(name, "UK Sanctions List", "Sanctions", list_type, country))
+
+        if not records:
+            raise ValueError(
+                f"Parsed {len(df)} row(s) but extracted 0 names from columns {name_component_cols}"
+            )
 
         return pd.DataFrame(records), {"ok": True, "rows": len(records), "fetched": _now()}
     except Exception as e:
