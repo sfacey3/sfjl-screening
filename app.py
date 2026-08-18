@@ -289,20 +289,26 @@ def fetch_eu_list():
 def fetch_pep_wikidata():
     """Best-effort PEP layer: current heads of state / heads of government,
     sourced live from Wikidata. NOT a comprehensive PEP database - see the
-    caveat banner in the UI."""
+    caveat banner in the UI.
+
+    Uses P35 (head of state) and P6 (head of government), which Wikidata
+    maintains directly on each country's own item as "current value"
+    properties. This is deliberately NOT done by matching P39 ("position
+    held") against the generic Q48352/Q2285706 concepts - in practice a
+    person's P39 value is a country-specific position item (e.g. "Prime
+    Minister of Jamaica"), not the generic concept itself, so that approach
+    silently misses almost every country.
+    """
     endpoint = "https://query.wikidata.org/sparql"
     query = """
-    SELECT DISTINCT ?personLabel ?positionLabel ?countryLabel WHERE {
-      ?person p:P39 ?stmt .
-      ?stmt ps:P39 ?position .
-      VALUES ?position { wd:Q48352 wd:Q2285706 }
-      FILTER NOT EXISTS { ?stmt pq:P582 ?end }
-      OPTIONAL { ?stmt pq:P1001 ?country }
-      OPTIONAL { ?person wdt:P27 ?citizenship }
-      BIND(COALESCE(?country, ?citizenship) AS ?ctry)
+    SELECT DISTINCT ?countryLabel ?headOfStateLabel ?headOfGovernmentLabel WHERE {
+      ?country wdt:P31 wd:Q6256 .
+      OPTIONAL { ?country wdt:P35 ?headOfState . }
+      OPTIONAL { ?country wdt:P6 ?headOfGovernment . }
+      FILTER(BOUND(?headOfState) || BOUND(?headOfGovernment))
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
     }
-    LIMIT 3000
+    LIMIT 1000
     """
     try:
         resp = requests.get(
@@ -316,16 +322,18 @@ def fetch_pep_wikidata():
         records = []
         seen = set()
         for b in data["results"]["bindings"]:
-            name = b.get("personLabel", {}).get("value", "").strip()
-            position = b.get("positionLabel", {}).get("value", "").strip()
             country = b.get("countryLabel", {}).get("value", "").strip()
-            if not name:
-                continue
-            key = (name, position, country)
-            if key in seen:
-                continue
-            seen.add(key)
-            records.append(_record(name, "Wikidata (open data)", "PEP", position, country))
+            head_of_state = b.get("headOfStateLabel", {}).get("value", "").strip()
+            head_of_gov = b.get("headOfGovernmentLabel", {}).get("value", "").strip()
+
+            for name, position in [(head_of_state, "Head of State"), (head_of_gov, "Head of Government")]:
+                if not name:
+                    continue
+                key = (name, position, country)
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(_record(name, "Wikidata (open data)", "PEP", position, country))
 
         if not records:
             raise ValueError("Wikidata query returned no results")
